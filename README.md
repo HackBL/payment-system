@@ -11,7 +11,9 @@ The purpose of this project is to demonstrate clean layering, business rule enfo
 - Cancel a payment with status validation
 
 ## Payment State Transition
-- Created -> Cancelled
+- CREATED -> CANCELED
+- CANCELED -> CANCELED (Idempotent)
+- otherwise -> 409 conflict
 
 ## API Endpoints
 
