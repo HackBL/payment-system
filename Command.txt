@@ -1,0 +1,48 @@
+1. 无 Idempotency-Key，连续发两次 → 两个不同 id:
+
+curl -s -X POST "http://localhost:8080/v1/payments" \
+  -H "Content-Type: application/json" \
+  -d '{"amount":100,"currency":"USD"}'
+
+2. 同 Idempotency-Key + 同 payload → 同一个 id
+
+curl -s -X POST "http://localhost:8080/v1/payments" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: idem-test-1" \
+  -d '{"amount":200,"currency":"USD"}'
+
+再跑一次（key 和 body 都不变）：
+curl -s -X POST "http://localhost:8080/v1/payments" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: idem-test-1" \
+  -d '{"amount":200,"currency":"USD"}'
+
+3. 同 Idempotency-Key + 不同 payload → 409 Conflict
+
+第一次（amount = 300）：
+curl -i -X POST "http://localhost:8080/v1/payments" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: idem-test-2" \
+  -d '{"amount":300,"currency":"USD"}'
+
+第二次（只改 amount，key 不变）：
+curl -i -X POST "http://localhost:8080/v1/payments" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: idem-test-2" \
+  -d '{"amount":400,"currency":"USD"}'
+
+
+4. 并发请求
+(
+  curl -s -X POST "http://localhost:8080/v1/payments" \
+    -H "Content-Type: application/json" \
+    -H "Idempotency-Key: idem-concurrent" \
+    -d '{"amount":500,"currency":"USD"}' &
+
+  curl -s -X POST "http://localhost:8080/v1/payments" \
+    -H "Content-Type: application/json" \
+    -H "Idempotency-Key: idem-concurrent" \
+    -d '{"amount":500,"currency":"USD"}' &
+
+  wait
+)

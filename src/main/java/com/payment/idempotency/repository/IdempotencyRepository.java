@@ -8,4 +8,5 @@ import java.util.Optional;
 public interface IdempotencyRepository {
     IdempotencySaveResult save(IdempotencyRecord idempotencyRecord);
     Optional<IdempotencyRecord> findByIdempotency(String idempotencyKey);
+    void markCompleted(String idempotencyKey);
 }
