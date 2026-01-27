@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -24,11 +25,12 @@ import java.util.UUID;
 // Service: contains core business logic and enforces payment status transitions
 @Service
 public class PaymentService {
-    private final PaymentRepository repository;
+    private final PaymentRepository paymentRepository;
     private final IdempotencyRepository idempotencyRepository;
+    private static final Duration IDEMPOTENCY_TTL = Duration.ofSeconds(30);
 
     public PaymentService(PaymentRepository paymentRepository, IdempotencyRepository idempotencyRepository) {
-        this.repository = paymentRepository;
+        this.paymentRepository = paymentRepository;
         this.idempotencyRepository = idempotencyRepository;
     }
 
@@ -40,7 +42,8 @@ public class PaymentService {
         if (request.getCurrency() == null || request.getCurrency().isBlank()) {
             throw new IllegalArgumentException("Currency required");
         }
-//        String paymentId = UUID.randomUUID().toString();
+
+        Instant now = Instant.now();
 
         // 带有Idempotency，生成新的payment request
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
@@ -51,20 +54,18 @@ public class PaymentService {
 
             // 通过Idempotency，进行了重复操作
             if (existingOpt.isPresent()) {
-
-                IdempotencyRecord existingRecord = existingOpt.get();
-                return validateAndReturnExistingPayment(existingRecord, requestHash);
+                return validateAndReturnExistingPayment(existingOpt.get(), requestHash);
             }
 
             // 新的Payment 带有Idempotency
             String paymentId = UUID.randomUUID().toString();
 
-            IdempotencyRecord record = new IdempotencyRecord(idempotencyKey, requestHash, paymentId, Instant.now(), RecordStatus.IN_PROGRESS);
+            IdempotencyRecord record = new IdempotencyRecord(idempotencyKey, requestHash, paymentId, now, RecordStatus.IN_PROGRESS);
             IdempotencySaveResult saveResult = idempotencyRepository.save(record);
 
             if (saveResult == IdempotencySaveResult.CREATED) {
 
-                Payment payment = createAndSavePayment(request, paymentId);
+                Payment payment = createAndSavePayment(request, paymentId, now);
                 try {
                     idempotencyRepository.markCompleted(idempotencyKey);
                 } catch (IllegalStateException ex) {
@@ -78,20 +79,22 @@ public class PaymentService {
                         .orElseThrow(() -> new IllegalStateException("Idempotency key exists but record missing"));
 
                 return validateAndReturnExistingPayment(existingRecord, requestHash);
+            } else {
+                throw new IllegalStateException("Unexpected idempotency saveResult=" + saveResult);
             }
         }
 
         // 不带有Idempotency，生成新的payment request
         String paymentId = UUID.randomUUID().toString();
 
-        Payment payment = createAndSavePayment(request, paymentId);
+        Payment payment = createAndSavePayment(request, paymentId, now);
         return toResponse(payment);
     }
 
 
 
     public PaymentResponse cancelPayment(String id) {
-        Payment payment = repository.findById(id)
+        Payment payment = paymentRepository.findById(id)
                 .orElseThrow(() -> new PaymentNotFoundException("Payment Not Found"));
 
         if (payment.getStatus() == PaymentStatus.CANCELED) {
@@ -104,13 +107,13 @@ public class PaymentService {
 
         payment.setStatus(PaymentStatus.CANCELED);
         payment.setUpdatedAt(Instant.now());
-        repository.save(payment);
+        paymentRepository.save(payment);
 
         return toResponse(payment);
     }
 
     public PaymentResponse getPayment(String id) {
-        Payment payment =  repository.findById(id)
+        Payment payment =  paymentRepository.findById(id)
                 .orElseThrow(() -> new PaymentNotFoundException("Payment Not Found"));
 
         return toResponse(payment);
@@ -150,24 +153,51 @@ public class PaymentService {
         }
 
         RecordStatus status = record.getRecordStatus();
-
         if (status == null) {
             throw new IllegalStateException("Unknown record status");
-        } else if (status == RecordStatus.IN_PROGRESS) {
-            throw new IdempotencyInProgressException("Request with same Idempotency-Key is still In Progress");
-        } else if (status != RecordStatus.COMPLETED) {
-            throw new IllegalStateException("Unsupported record status=" + status + " for paymentId=" + record.getPaymentId());
         }
 
-        Payment oldPayment = repository.findById(record.getPaymentId())
-                .orElseThrow(() -> new IllegalStateException("Idempotency record points to missing payment"));
+        if (status == RecordStatus.EXPIRED) {
+            throw new ConflictException("Idempotency-Key expired; retry with a NEW key");
+        }
 
-        return toResponse(oldPayment);
+        Optional<Payment> paymentOpt = paymentRepository.findById(record.getPaymentId());
+
+        if (status == RecordStatus.IN_PROGRESS) {
+
+            if (paymentOpt.isEmpty()) {
+                if (isExpired(record)) {
+                    try {
+                        idempotencyRepository.markExpired(record.getIdempotencyKey());
+                    } catch (IllegalStateException ex) {
+                        System.err.println("[WARN] markExpired failed. key=" + record.getIdempotencyKey() + ", error=" + ex.getMessage());
+                    }
+
+                    throw new ConflictException("Idempotency-Key expired; retry with a NEW key");
+                }
+
+                throw new IdempotencyInProgressException("Request with same Idempotency is still In-Progress");
+            }
+
+            try {
+                idempotencyRepository.markCompleted(record.getIdempotencyKey());
+            } catch (IllegalStateException ex) {
+                System.err.println("[WARN] markCompleted failed. key=" + record.getIdempotencyKey() + ", error=" + ex.getMessage());
+            }
+
+            return toResponse(paymentOpt.get());
+        }
+
+        if (status == RecordStatus.COMPLETED) {
+            Payment payment = paymentOpt.orElseThrow(() ->
+                    new IllegalStateException("Record is COMPLETED but payment missing. paymentId=" + record.getPaymentId()));
+            return toResponse(payment);
+        }
+
+        throw new IllegalStateException("Unsupported record status=" + status + " for paymentId=" + record.getPaymentId());
     }
 
-    private Payment createAndSavePayment(CreatePaymentRequest request, String paymentId) {
-        Instant now = Instant.now();
-
+    private Payment createAndSavePayment(CreatePaymentRequest request, String paymentId, Instant now) {
         Payment payment = new Payment(
                 paymentId,
                 request.getAmount(),
@@ -177,8 +207,13 @@ public class PaymentService {
                 now
         );
 
-        repository.save(payment);
+        paymentRepository.save(payment);
         return payment;
     }
 
+    private boolean isExpired(IdempotencyRecord record) {
+        return record.getCreatedAt()
+                .plus(IDEMPOTENCY_TTL)
+                .isBefore(Instant.now());
+    }
 }

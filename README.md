@@ -49,3 +49,57 @@ This service distinguishes business errors from system failures using appropriat
     
     Reserved for unexpected system failures.
  
+## Idempotency Design (Key Focus)
+This service supports idempotent payment creation using an Idempotency-Key header.
+
+## Why Idempotency?
+
+In real-world systems, clients may retry requests due to:
+- Network timeouts
+- Client crashes
+- Uncertain request outcomes
+
+Without idempotency, retries could result in duplicate payments.
+
+
+## Idempotency Mechanism
+- Each POST /v1/payments request may include an Idempotency-Key
+- The request payload is hashed and stored with the key
+- Reusing the same key with a different payload results in a conflict
+
+
+## Idempotency Record States
+
+The system tracks idempotency records with explicit lifecycle states:
+- IN_PROGRESS — payment creation started but not fully completed
+- COMPLETED — payment successfully created
+- EXPIRED — request exceeded TTL without completion
+
+This design helps handle consistency gaps between payment creation and idempotency updates.
+
+
+
+## TTL & Recovery
+
+To avoid permanently stuck IN_PROGRESS records:
+- Each idempotency record has a TTL
+- If a request is retried after TTL expiration:
+- The record is marked as EXPIRED
+- The client is instructed to retry with a new Idempotency-Key
+
+
+## Unit Test Coverage
+
+Core idempotency scenarios are covered by unit tests, including:
+- Payment creation without idempotency
+- First-time idempotent request
+- Repeated requests with same key and same payload
+- Conflicting payloads with same idempotency key
+- In-progress retry handling
+
+
+
+## Future Improvements
+- Persist idempotency records in a database
+- Background cleanup job for expired records
+- Event-driven payment lifecycle (PaymentCreated, PaymentCanceled)

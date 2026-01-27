@@ -9,4 +9,5 @@ public interface IdempotencyRepository {
     IdempotencySaveResult save(IdempotencyRecord idempotencyRecord);
     Optional<IdempotencyRecord> findByIdempotency(String idempotencyKey);
     void markCompleted(String idempotencyKey);
+    void markExpired(String idempotencyKey);
 }

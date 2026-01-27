@@ -34,4 +34,15 @@ public class InMemoryIdempotencyRepository implements IdempotencyRepository{
 
         record.setRecordStatus(RecordStatus.COMPLETED);
     }
+
+    @Override
+    public void markExpired(String idempotencyKey) {
+        IdempotencyRecord record = store.get(idempotencyKey);
+
+        if (record == null) {
+            throw new IllegalStateException("Idempotency record not found for key=" + idempotencyKey) ;
+        }
+
+        record.setRecordStatus(RecordStatus.EXPIRED);
+    }
 }
