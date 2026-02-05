@@ -1,8 +1,11 @@
 package com.payment.service;
 import com.payment.domain.Payment;
 import com.payment.domain.PaymentStatus;
+import com.payment.dto.CancelPaymentRequest;
 import com.payment.dto.CreatePaymentRequest;
 import com.payment.dto.PaymentResponse;
+import com.payment.event.model.*;
+import com.payment.event.publisher.PaymentEventPublisher;
 import com.payment.exception.ConflictException;
 import com.payment.exception.IdempotencyInProgressException;
 import com.payment.exception.InvalidPaymentStatusException;
@@ -27,11 +30,13 @@ import java.util.UUID;
 public class PaymentService {
     private final PaymentRepository paymentRepository;
     private final IdempotencyRepository idempotencyRepository;
+    private final PaymentEventPublisher publisher;
     private static final Duration IDEMPOTENCY_TTL = Duration.ofSeconds(30);
 
-    public PaymentService(PaymentRepository paymentRepository, IdempotencyRepository idempotencyRepository) {
+    public PaymentService(PaymentRepository paymentRepository, IdempotencyRepository idempotencyRepository, PaymentEventPublisher publisher) {
         this.paymentRepository = paymentRepository;
         this.idempotencyRepository = idempotencyRepository;
+        this.publisher = publisher;
     }
 
 
@@ -66,6 +71,8 @@ public class PaymentService {
             if (saveResult == IdempotencySaveResult.CREATED) {
 
                 Payment payment = createAndSavePayment(request, paymentId, now);
+                publishPaymentCreated(payment, now, idempotencyKey);
+
                 try {
                     idempotencyRepository.markCompleted(idempotencyKey);
                 } catch (IllegalStateException ex) {
@@ -88,12 +95,13 @@ public class PaymentService {
         String paymentId = UUID.randomUUID().toString();
 
         Payment payment = createAndSavePayment(request, paymentId, now);
+        publishPaymentCreated(payment, now, idempotencyKey);
+
         return toResponse(payment);
     }
 
 
-
-    public PaymentResponse cancelPayment(String id) {
+    public PaymentResponse cancelPayment(String id, String idempotencyKey, CancelPaymentRequest request) {
         Payment payment = paymentRepository.findById(id)
                 .orElseThrow(() -> new PaymentNotFoundException("Payment Not Found"));
 
@@ -106,8 +114,12 @@ public class PaymentService {
         }
 
         payment.setStatus(PaymentStatus.CANCELED);
-        payment.setUpdatedAt(Instant.now());
+        Instant now = Instant.now();
+        payment.setUpdatedAt(now);
         paymentRepository.save(payment);
+
+        String reason = request == null ? null : request.getReason();
+        publishPaymentCanceled(payment, now, idempotencyKey, reason);
 
         return toResponse(payment);
     }
@@ -216,4 +228,27 @@ public class PaymentService {
                 .plus(IDEMPOTENCY_TTL)
                 .isBefore(Instant.now());
     }
+
+    private void publishPaymentCreated(Payment payment, Instant now, String idempotencyKey) {
+        PaymentEvent event = new PaymentCreatedEvent(
+                payment.getId(),
+                now,
+                idempotencyKey,
+                payment.getAmount(),
+                payment.getCurrency());
+
+        publisher.publish(event);
+    }
+
+    private void publishPaymentCanceled(Payment payment, Instant now, String idempotencyKey, String reason) {
+        PaymentEvent event = new PaymentCanceledEvent(
+                payment.getId(),
+                now,
+                idempotencyKey,
+                reason);
+
+        publisher.publish(event);
+    }
+
+
 }

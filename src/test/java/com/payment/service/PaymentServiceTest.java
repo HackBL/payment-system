@@ -33,7 +33,7 @@ class PaymentServiceTest {
     void setUp() {
         paymentRepository = new InMemoryPaymentRepository();
         idempotencyRepository = new InMemoryIdempotencyRepository();
-        paymentService = new PaymentService(paymentRepository, idempotencyRepository);
+        paymentService = new PaymentService(paymentRepository, idempotencyRepository, null);
     }
 
     //  1) 无 idempotencyKey → 创建新 payment

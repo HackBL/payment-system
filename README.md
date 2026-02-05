@@ -15,6 +15,14 @@ The purpose of this project is to demonstrate clean layering, business rule enfo
 - CANCELED -> CANCELED (Idempotent)
 - otherwise -> 409 conflict
 
+
+CREATED
+  → AUTHORIZED
+    → CAPTURED
+      → REFUNDED
+    → VOIDED
+  → CANCELED
+
 ## API Endpoints
 
 - POST /v1/payments
@@ -103,3 +111,16 @@ Core idempotency scenarios are covered by unit tests, including:
 - Persist idempotency records in a database
 - Background cleanup job for expired records
 - Event-driven payment lifecycle (PaymentCreated, PaymentCanceled)
+
+## Payment Events (Planned)
+
+This module will introduce domain events to decouple payment lifecycle changes.
+
+Planned events:
+- PaymentCreated
+- PaymentCanceled
+
+Goals:
+- Decouple side effects from core payment logic
+- Enable async processing and future extensibility
+- Prepare for message-driven architecture
